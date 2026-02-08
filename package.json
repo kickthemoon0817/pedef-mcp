@@ -1,0 +1,14 @@
+{
+  "name": "pedef-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Pedef reader entrypoints",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "smoke": "node scripts/smoke-test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

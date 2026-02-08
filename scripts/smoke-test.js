@@ -1,43 +1,9 @@
 import { spawn } from "node:child_process";
+import { createContentLengthParser } from "../src/protocol.js";
 
 function encode(payload) {
   const json = JSON.stringify(payload);
   return `Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`;
-}
-
-function createParser(onMessage) {
-  let buffer = Buffer.alloc(0);
-
-  return (chunk) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    while (true) {
-      const headerEnd = buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) {
-        return;
-      }
-
-      const header = buffer.subarray(0, headerEnd).toString("utf8");
-      const lengthLine = header
-        .split("\r\n")
-        .find((line) => line.toLowerCase().startsWith("content-length:"));
-
-      if (!lengthLine) {
-        buffer = buffer.subarray(headerEnd + 4);
-        continue;
-      }
-
-      const length = Number(lengthLine.split(":")[1].trim());
-      const end = headerEnd + 4 + length;
-      if (buffer.length < end) {
-        return;
-      }
-
-      const body = buffer.subarray(headerEnd + 4, end).toString("utf8");
-      buffer = buffer.subarray(end);
-
-      onMessage(JSON.parse(body));
-    }
-  };
 }
 
 function send(proc, payload) {
@@ -47,6 +13,7 @@ function send(proc, payload) {
 async function run() {
   const proc = spawn("node", ["src/server.js"], { stdio: ["pipe", "pipe", "pipe"] });
   const replies = new Map();
+  let nextId = 1;
 
   proc.stderr.on("data", (chunk) => {
     process.stderr.write(chunk);
@@ -54,7 +21,7 @@ async function run() {
 
   proc.stdout.on(
     "data",
-    createParser((message) => {
+    createContentLengthParser((message) => {
       if (Object.prototype.hasOwnProperty.call(message, "id")) {
         replies.set(message.id, message);
       }
@@ -77,9 +44,15 @@ async function run() {
     return reply;
   };
 
+  function assert(condition, message) {
+    if (!condition) throw new Error(`ASSERT FAILED: ${message}`);
+  }
+
+  // --- Initialize ---
+  const initId = nextId++;
   send(proc, {
     jsonrpc: "2.0",
-    id: 1,
+    id: initId,
     method: "initialize",
     params: {
       protocolVersion: "2025-11-25",
@@ -87,55 +60,79 @@ async function run() {
       clientInfo: { name: "smoke-test", version: "0.1.0" }
     }
   });
-  const initReply = await expectReply(1);
-  if (!initReply.result?.serverInfo?.name) {
-    throw new Error("initialize did not return serverInfo");
-  }
+  const initReply = await expectReply(initId);
+  assert(initReply.result?.serverInfo?.name === "pedef-mcp", "initialize returned serverInfo");
 
   send(proc, { jsonrpc: "2.0", method: "notifications/initialized", params: {} });
 
-  send(proc, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-  const listReply = await expectReply(2);
-  if (!Array.isArray(listReply.result?.tools) || listReply.result.tools.length === 0) {
-    throw new Error("tools/list returned no tools");
-  }
+  // --- tools/list ---
+  const listId = nextId++;
+  send(proc, { jsonrpc: "2.0", id: listId, method: "tools/list", params: {} });
+  const listReply = await expectReply(listId);
+  assert(Array.isArray(listReply.result?.tools) && listReply.result.tools.length === 5, "tools/list returned 5 tools");
 
+  // --- reader.list_entrypoints ---
+  const entryId = nextId++;
   send(proc, {
     jsonrpc: "2.0",
-    id: 3,
+    id: entryId,
+    method: "tools/call",
+    params: { name: "reader.list_entrypoints", arguments: {} }
+  });
+  const entryReply = await expectReply(entryId);
+  assert(entryReply.result?.content?.[0]?.text?.includes("reader"), "list_entrypoints has reader data");
+
+  // --- reader.get_text (single page) ---
+  const textId = nextId++;
+  send(proc, {
+    jsonrpc: "2.0",
+    id: textId,
     method: "tools/call",
     params: {
-      name: "reader.list_entrypoints",
-      arguments: {}
+      name: "reader.get_text",
+      arguments: { session_id: "demo-session", page_index: 0 }
     }
   });
-  const entryReply = await expectReply(3);
-  if (!entryReply.result?.content?.[0]?.text?.includes("reader")) {
-    throw new Error("reader.list_entrypoints returned unexpected content");
-  }
+  const textReply = await expectReply(textId);
+  assert(textReply.result?.content?.[0]?.text?.includes("demo page text"), "get_text returns page text");
 
+  // --- reader.get_text (page range) ---
+  const rangeId = nextId++;
   send(proc, {
     jsonrpc: "2.0",
-    id: 4,
+    id: rangeId,
+    method: "tools/call",
+    params: {
+      name: "reader.get_text",
+      arguments: { session_id: "demo-session", page_start: 0, page_end_exclusive: 2 }
+    }
+  });
+  const rangeReply = await expectReply(rangeId);
+  assert(rangeReply.result?.content?.[0]?.text?.includes("sources"), "get_text range returns sources");
+
+  // --- reader.caption_region ---
+  const captionId = nextId++;
+  send(proc, {
+    jsonrpc: "2.0",
+    id: captionId,
     method: "tools/call",
     params: {
       name: "reader.caption_region",
       arguments: {
         session_id: "demo-session",
         page_index: 1,
-        rect: { x: 10, y: 20, width: 80, height: 60 },
-        appearance: "dark"
+        rect: { x: 10, y: 20, width: 80, height: 60 }
       }
     }
   });
-  const captionReply = await expectReply(4);
-  if (!captionReply.result?.content?.[0]?.text?.includes("caption")) {
-    throw new Error("reader.caption_region missing caption payload");
-  }
+  const captionReply = await expectReply(captionId);
+  assert(captionReply.result?.content?.[0]?.text?.includes("caption"), "caption_region has caption");
 
+  // --- reader.capture_region ---
+  const captureId = nextId++;
   send(proc, {
     jsonrpc: "2.0",
-    id: 5,
+    id: captureId,
     method: "tools/call",
     params: {
       name: "reader.capture_region",
@@ -147,16 +144,66 @@ async function run() {
       }
     }
   });
-  const captureReply = await expectReply(5);
-  if (!captureReply.result?.content?.[0]?.data) {
-    throw new Error("reader.capture_region missing image payload");
-  }
+  const captureReply = await expectReply(captureId);
+  assert(captureReply.result?.content?.[0]?.data, "capture_region returns image data");
+
+  // --- reader.snapshot_state ---
+  const snapId = nextId++;
+  send(proc, {
+    jsonrpc: "2.0",
+    id: snapId,
+    method: "tools/call",
+    params: {
+      name: "reader.snapshot_state",
+      arguments: { session_id: "demo-session" }
+    }
+  });
+  const snapReply = await expectReply(snapId);
+  assert(snapReply.result?.content?.[0]?.text?.includes("Demo Paper"), "snapshot_state has paper title");
+
+  // --- Error: unknown tool ---
+  const unknownId = nextId++;
+  send(proc, {
+    jsonrpc: "2.0",
+    id: unknownId,
+    method: "tools/call",
+    params: { name: "nonexistent.tool", arguments: {} }
+  });
+  const unknownReply = await expectReply(unknownId);
+  assert(unknownReply.result?.isError === true, "unknown tool returns isError");
+
+  // --- Error: unknown session ---
+  const badSessionId = nextId++;
+  send(proc, {
+    jsonrpc: "2.0",
+    id: badSessionId,
+    method: "tools/call",
+    params: {
+      name: "reader.get_text",
+      arguments: { session_id: "no-such-session", page_index: 0 }
+    }
+  });
+  const badSessionReply = await expectReply(badSessionId);
+  assert(badSessionReply.result?.isError === true, "unknown session returns isError");
+
+  // --- Error: unknown method ---
+  const badMethodId = nextId++;
+  send(proc, {
+    jsonrpc: "2.0",
+    id: badMethodId,
+    method: "nonexistent/method",
+    params: {}
+  });
+  const badMethodReply = await expectReply(badMethodId);
+  assert(badMethodReply.error?.code === -32601, "unknown method returns -32601");
 
   proc.kill();
-  console.log("Smoke test passed.");
+  console.log("Smoke test passed (all assertions ok).");
 }
 
 run().catch((error) => {
   console.error(error);
   process.exitCode = 1;
+  // Ensure child process is killed on failure
+  try { process.kill(0); } catch { /* ignore */ }
 });

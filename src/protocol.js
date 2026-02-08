@@ -26,7 +26,11 @@ export function createContentLengthParser(onMessage) {
         continue;
       }
 
-      const length = Number(lengthLine.split(":")[1]?.trim() ?? "0");
+      const length = Number(lengthLine.split(":").slice(1).join(":").trim());
+      if (!Number.isFinite(length) || length < 0) {
+        buffer = buffer.subarray(headerEnd + 4);
+        continue;
+      }
       const total = headerEnd + 4 + length;
       if (buffer.length < total) {
         return;

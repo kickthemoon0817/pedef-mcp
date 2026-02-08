@@ -75,10 +75,12 @@ export const pedefBridge = {
     }
 
     if (Number.isInteger(page_start) && Number.isInteger(page_end_exclusive)) {
+      const clampedEnd = Math.min(page_end_exclusive, session.page_count ?? page_end_exclusive);
+      const clampedStart = Math.max(page_start, 0);
       const textParts = [];
       const sources = [];
 
-      for (let index = page_start; index < page_end_exclusive; index += 1) {
+      for (let index = clampedStart; index < clampedEnd; index += 1) {
         textParts.push(pages[String(index)] ?? "");
         sources.push({ session_id, page_index: index });
       }

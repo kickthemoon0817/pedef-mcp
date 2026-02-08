@@ -6,16 +6,17 @@ const queue = new ToolQueue();
 
 function asToolResult(result) {
   if (result?.payload?.image_base64 && result?.payload?.mime_type) {
+    const { image_base64, ...metadataPayload } = result.payload;
     return {
       content: [
         {
           type: "image",
-          data: result.payload.image_base64,
+          data: image_base64,
           mimeType: result.payload.mime_type
         },
         {
           type: "text",
-          text: JSON.stringify(result, null, 2)
+          text: JSON.stringify({ ...result, payload: metadataPayload }, null, 2)
         }
       ]
     };
@@ -27,8 +28,7 @@ function asToolResult(result) {
         type: "text",
         text: JSON.stringify(result, null, 2)
       }
-    ],
-    structuredContent: result
+    ]
   };
 }
 
@@ -38,6 +38,20 @@ async function handleRequest(message) {
   }
 
   const id = Object.prototype.hasOwnProperty.call(message, "id") ? message.id : null;
+
+  if (!message.method || typeof message.method !== "string") {
+    if (id !== null) {
+      return writeMessage(process.stdout, {
+        jsonrpc: "2.0",
+        id,
+        error: {
+          code: -32600,
+          message: "Invalid Request: missing or non-string method"
+        }
+      });
+    }
+    return;
+  }
 
   if (message.method === "initialize") {
     return writeMessage(process.stdout, {
@@ -111,14 +125,16 @@ async function handleRequest(message) {
       id,
       error: {
         code: -32601,
-        message: `Method not found: ${message.method ?? "<unknown>"}`
+        message: `Method not found: ${message.method}`
       }
     });
   }
 }
 
 const parser = createContentLengthParser((message) => {
-  void handleRequest(message);
+  handleRequest(message).catch((error) => {
+    process.stderr.write(`Unhandled error: ${error?.message ?? error}\n`);
+  });
 });
 
 process.stdin.on("data", parser);

@@ -10,16 +10,16 @@ export class ToolQueue {
   enqueue(item) {
     return new Promise((resolve, reject) => {
       this.queue.push({ item, resolve, reject });
-      this.drain();
+      if (!this.running) {
+        this.running = true;
+        // Defer drain to next microtask so the enqueue promise is
+        // returned before processing begins, avoiding re-entrancy.
+        Promise.resolve().then(() => this.drain());
+      }
     });
   }
 
   async drain() {
-    if (this.running) {
-      return;
-    }
-
-    this.running = true;
     while (this.queue.length > 0) {
       const next = this.queue.shift();
       if (!next) {
